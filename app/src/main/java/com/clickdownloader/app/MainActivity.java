@@ -90,9 +90,13 @@ public class MainActivity extends AppCompatActivity {
                 statusText.setText(status);
             }
 
-            if (status.contains("Queue completed")
-                    || status.contains("Cancelled")
-                    || status.contains("Failed")) {
+            if (status.contains("completed")
+                    || status.contains("Completed")
+                    || status.contains("finished")
+                    || status.contains("Finished")
+                    || status.contains("failed")
+                    || status.contains("Failed")
+                    || status.contains("Cancelled")) {
                 refreshHistory();
             }
         }
@@ -163,6 +167,7 @@ public class MainActivity extends AppCompatActivity {
 
     private View buildUi() {
         ScrollView scroll = new ScrollView(this);
+        scroll.setFitsSystemWindows(true);
         scroll.setBackgroundColor(BG);
         scroll.setFillViewport(true);
 
@@ -258,9 +263,9 @@ public class MainActivity extends AppCompatActivity {
         optionsCard.addView(qualitySpinner);
 
         aria2Switch = optionSwitch(
-                "aria2 acceleration",
-                "Parallel external downloader where supported.",
-                true
+                "aria2 acceleration (experimental)",
+                "Faster on some sites. Falls back to native downloader if aria2 fails.",
+                false
         );
         addTopMargin(optionsCard, aria2Switch, 8);
 

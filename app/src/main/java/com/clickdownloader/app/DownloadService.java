@@ -20,6 +20,7 @@ import com.yausername.youtubedl_android.YoutubeDLRequest;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -48,6 +49,7 @@ public class DownloadService extends Service {
     private static final String TAG = "DownloadService";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+
     private volatile String activeProcessId;
     private volatile boolean cancelled;
 
@@ -64,19 +66,7 @@ public class DownloadService extends Service {
         }
 
         if (ACTION_CANCEL.equals(intent.getAction())) {
-            cancelled = true;
-
-            String processId = activeProcessId;
-            if (processId != null) {
-                try {
-                    YoutubeDL.getInstance().destroyProcessById(processId);
-                } catch (Exception ignored) {
-                }
-            }
-
-            sendStatus("Cancelled", 0, -1);
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf();
+            cancelActiveDownload();
             return START_NOT_STICKY;
         }
 
@@ -91,7 +81,13 @@ public class DownloadService extends Service {
         }
 
         int qualityIndex = intent.getIntExtra(EXTRA_QUALITY, 0);
-        boolean aria2 = intent.getBooleanExtra(EXTRA_ARIA2, true);
+
+        /*
+         * aria2 is intentionally OFF by default.
+         * It can be faster on some sites, but external downloaders can receive
+         * HTTP 403 responses even when yt-dlp's native downloader succeeds.
+         */
+        boolean aria2 = intent.getBooleanExtra(EXTRA_ARIA2, false);
         boolean thumb = intent.getBooleanExtra(EXTRA_THUMB, true);
         boolean meta = intent.getBooleanExtra(EXTRA_META, true);
         boolean subs = intent.getBooleanExtra(EXTRA_SUBS, false);
@@ -105,6 +101,23 @@ public class DownloadService extends Service {
         );
 
         return START_NOT_STICKY;
+    }
+
+    private void cancelActiveDownload() {
+        cancelled = true;
+
+        String processId = activeProcessId;
+        if (processId != null) {
+            try {
+                YoutubeDL.getInstance().destroyProcessById(processId);
+            } catch (Exception ignored) {
+            }
+        }
+
+        sendStatus("Cancelled", 0, -1);
+        updateForeground("Cancelled", 0, -1);
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        stopSelf();
     }
 
     private void runQueue(
@@ -121,13 +134,17 @@ public class DownloadService extends Service {
         );
 
         if (!outputDir.exists() && !outputDir.mkdirs()) {
-            sendStatus("Cannot create Downloads/ClickDownloader", 0, -1);
+            String message = "Failed: cannot create Downloads/ClickDownloader";
+            sendStatus(message, 0, -1);
+            updateForeground(message, 0, -1);
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
             return;
         }
 
         int total = urls.size();
+        int successCount = 0;
+        int failedCount = 0;
 
         for (int i = 0; i < total; i++) {
             if (cancelled) {
@@ -136,85 +153,80 @@ public class DownloadService extends Service {
 
             String url = urls.get(i);
             String queuePrefix = "[" + (i + 1) + "/" + total + "] ";
-            activeProcessId = "click_" + System.currentTimeMillis() + "_" + i;
 
-            try {
-                YoutubeDLRequest request = new YoutubeDLRequest(url);
+            boolean succeeded = false;
+            Exception finalError = null;
 
-                request.addOption("--no-warnings");
-                request.addOption("--newline");
-                request.addOption("--continue");
-                request.addOption("--part");
-                request.addOption("--retries", "10");
-                request.addOption("--fragment-retries", "10");
-                request.addOption("--concurrent-fragments", "4");
-
-                request.addOption("-f", DownloadOptions.formatForIndex(qualityIndex));
-                request.addOption(
-                        "-o",
-                        new File(
-                                outputDir,
-                                "%(title).180B [%(id)s].%(ext)s"
-                        ).getAbsolutePath()
-                );
-
-                if (DownloadOptions.isAudioOnly(qualityIndex)) {
-                    request.addOption("--extract-audio");
-                    request.addOption("--audio-format", "mp3");
-                    request.addOption("--audio-quality", "0");
-                } else {
-                    request.addOption("--merge-output-format", "mp4");
-                }
-
-                if (aria2) {
-                    request.addOption("--downloader", "libaria2c.so");
-                }
-
-                if (thumb) {
-                    request.addOption("--embed-thumbnail");
-                }
-
-                if (meta) {
-                    request.addOption("--embed-metadata");
-                }
-
-                if (subs) {
-                    request.addOption("--write-subs");
-                    request.addOption("--write-auto-subs");
-                    request.addOption("--sub-langs", "all,-live_chat");
-                    request.addOption("--embed-subs");
-                }
-
-                if (CookieStore.exists(this)) {
-                    request.addOption(
-                            "--cookies",
-                            CookieStore.getFile(this).getAbsolutePath()
+            /*
+             * First try aria2 only when the user enabled it.
+             * If aria2 fails with an HTTP/external-downloader style error,
+             * immediately retry the same URL with yt-dlp's native downloader.
+             */
+            if (aria2) {
+                try {
+                    executeDownload(
+                            url,
+                            queuePrefix,
+                            outputDir,
+                            qualityIndex,
+                            true,
+                            thumb,
+                            meta,
+                            subs
                     );
+                    succeeded = true;
+                } catch (Exception ariaError) {
+                    finalError = ariaError;
+
+                    if (!cancelled && shouldFallbackFromAria2(ariaError)) {
+                        String fallbackStatus =
+                                queuePrefix + "aria2 failed, retrying with native downloader…";
+
+                        sendStatus(fallbackStatus, 0, -1);
+                        updateForeground(fallbackStatus, 0, -1);
+
+                        try {
+                            executeDownload(
+                                    url,
+                                    queuePrefix,
+                                    outputDir,
+                                    qualityIndex,
+                                    false,
+                                    thumb,
+                                    meta,
+                                    subs
+                            );
+                            succeeded = true;
+                            finalError = null;
+                        } catch (Exception nativeError) {
+                            finalError = nativeError;
+                        }
+                    }
                 }
+            } else {
+                try {
+                    executeDownload(
+                            url,
+                            queuePrefix,
+                            outputDir,
+                            qualityIndex,
+                            false,
+                            thumb,
+                            meta,
+                            subs
+                    );
+                    succeeded = true;
+                } catch (Exception nativeError) {
+                    finalError = nativeError;
+                }
+            }
 
-                Function3<Float, Long, String, Unit> callback =
-                        new Function3<Float, Long, String, Unit>() {
-                            @Override
-                            public Unit invoke(Float progress, Long eta, String line) {
-                                int p = progress == null ? 0 : Math.round(progress);
-                                long etaValue = eta == null ? -1 : eta;
+            if (cancelled) {
+                break;
+            }
 
-                                String status = queuePrefix
-                                        + (line == null || line.trim().isEmpty()
-                                        ? "Downloading"
-                                        : line);
-
-                                updateForeground(status, p, etaValue);
-                                sendStatus(status, p, etaValue);
-                                return Unit.INSTANCE;
-                            }
-                        };
-
-                YoutubeDL.getInstance().execute(
-                        request,
-                        activeProcessId,
-                        callback
-                );
+            if (succeeded) {
+                successCount++;
 
                 HistoryStore.add(
                         this,
@@ -224,39 +236,240 @@ public class DownloadService extends Service {
                 );
 
                 sendStatus(queuePrefix + "Completed", 100, 0);
+                updateForeground(queuePrefix + "Completed", 100, 0);
+            } else {
+                failedCount++;
 
-            } catch (Exception e) {
-                Log.e(TAG, "Download failed", e);
+                String errorMessage = readableError(finalError);
 
-                if (!cancelled) {
-                    HistoryStore.add(
-                            this,
-                            "Failed: " + e.getMessage(),
-                            url,
-                            false
-                    );
+                Log.e(
+                        TAG,
+                        "Download failed for " + url,
+                        finalError
+                );
 
-                    sendStatus(
-                            queuePrefix + "Failed: "
-                                    + (e.getMessage() == null
-                                    ? e.getClass().getSimpleName()
-                                    : e.getMessage()),
-                            0,
-                            -1
-                    );
-                }
+                HistoryStore.add(
+                        this,
+                        "Failed: " + errorMessage,
+                        url,
+                        false
+                );
+
+                String failedStatus = queuePrefix + "Failed: " + errorMessage;
+
+                sendStatus(failedStatus, 0, -1);
+                updateForeground(failedStatus, 0, -1);
             }
         }
 
         activeProcessId = null;
 
         if (!cancelled) {
-            sendStatus("Queue completed", 100, 0);
-            updateForeground("Queue completed", 100, 0);
+            String finalStatus;
+
+            if (failedCount == 0) {
+                finalStatus =
+                        successCount == 1
+                                ? "Download completed"
+                                : "Queue completed: " + successCount + " successful";
+            } else if (successCount == 0) {
+                finalStatus =
+                        failedCount == 1
+                                ? "Download failed"
+                                : "Queue failed: " + failedCount + " downloads failed";
+            } else {
+                finalStatus =
+                        "Queue finished: "
+                                + successCount
+                                + " successful, "
+                                + failedCount
+                                + " failed";
+            }
+
+            int finalProgress = failedCount == 0 ? 100 : 0;
+
+            sendStatus(finalStatus, finalProgress, -1);
+            updateForeground(finalStatus, finalProgress, -1);
         }
 
         stopForeground(STOP_FOREGROUND_DETACH);
         stopSelf();
+    }
+
+    private void executeDownload(
+            String url,
+            String queuePrefix,
+            File outputDir,
+            int qualityIndex,
+            boolean useAria2,
+            boolean thumb,
+            boolean meta,
+            boolean subs
+    ) throws Exception {
+        activeProcessId =
+                "click_"
+                        + System.currentTimeMillis()
+                        + "_"
+                        + (useAria2 ? "aria2" : "native");
+
+        YoutubeDLRequest request = createRequest(
+                url,
+                outputDir,
+                qualityIndex,
+                useAria2,
+                thumb,
+                meta,
+                subs
+        );
+
+        Function3<Float, Long, String, Unit> callback =
+                new Function3<Float, Long, String, Unit>() {
+                    @Override
+                    public Unit invoke(Float progress, Long eta, String line) {
+                        int p = progress == null ? 0 : Math.round(progress);
+                        long etaValue = eta == null ? -1 : eta;
+
+                        String cleanLine =
+                                line == null || line.trim().isEmpty()
+                                        ? "Downloading"
+                                        : line.trim();
+
+                        String mode = useAria2 ? "aria2" : "native";
+                        String status =
+                                queuePrefix
+                                        + cleanLine
+                                        + " • "
+                                        + mode;
+
+                        updateForeground(status, p, etaValue);
+                        sendStatus(status, p, etaValue);
+
+                        return Unit.INSTANCE;
+                    }
+                };
+
+        YoutubeDL.getInstance().execute(
+                request,
+                activeProcessId,
+                callback
+        );
+    }
+
+    private YoutubeDLRequest createRequest(
+            String url,
+            File outputDir,
+            int qualityIndex,
+            boolean useAria2,
+            boolean thumb,
+            boolean meta,
+            boolean subs
+    ) {
+        YoutubeDLRequest request = new YoutubeDLRequest(url);
+
+        request.addOption("--no-warnings");
+        request.addOption("--newline");
+        request.addOption("--continue");
+        request.addOption("--part");
+        request.addOption("--no-playlist");
+        request.addOption("--retries", "10");
+        request.addOption("--fragment-retries", "10");
+        request.addOption("--concurrent-fragments", "4");
+
+        request.addOption(
+                "-f",
+                DownloadOptions.formatForIndex(qualityIndex)
+        );
+
+        request.addOption(
+                "-o",
+                new File(
+                        outputDir,
+                        "%(title).180B [%(id)s].%(ext)s"
+                ).getAbsolutePath()
+        );
+
+        if (DownloadOptions.isAudioOnly(qualityIndex)) {
+            request.addOption("--extract-audio");
+            request.addOption("--audio-format", "mp3");
+            request.addOption("--audio-quality", "0");
+        } else {
+            request.addOption("--merge-output-format", "mp4");
+        }
+
+        if (useAria2) {
+            request.addOption("--downloader", "libaria2c.so");
+            request.addOption(
+                    "--external-downloader-args",
+                    "aria2c:--summary-interval=1"
+            );
+        }
+
+        if (thumb) {
+            request.addOption("--embed-thumbnail");
+        }
+
+        if (meta) {
+            request.addOption("--embed-metadata");
+        }
+
+        if (subs) {
+            request.addOption("--write-subs");
+            request.addOption("--write-auto-subs");
+            request.addOption("--sub-langs", "all,-live_chat");
+            request.addOption("--embed-subs");
+        }
+
+        if (CookieStore.exists(this)) {
+            request.addOption(
+                    "--cookies",
+                    CookieStore.getFile(this).getAbsolutePath()
+            );
+        }
+
+        return request;
+    }
+
+    private boolean shouldFallbackFromAria2(Exception error) {
+        if (error == null) {
+            return true;
+        }
+
+        String message = error.getMessage();
+
+        if (message == null) {
+            return true;
+        }
+
+        String lower = message.toLowerCase(Locale.US);
+
+        return lower.contains("aria2")
+                || lower.contains("code 22")
+                || lower.contains("403")
+                || lower.contains("http")
+                || lower.contains("external downloader");
+    }
+
+    private String readableError(Exception error) {
+        if (error == null) {
+            return "Unknown error";
+        }
+
+        String message = error.getMessage();
+
+        if (message == null || message.trim().isEmpty()) {
+            return error.getClass().getSimpleName();
+        }
+
+        String cleaned = message
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .trim();
+
+        if (cleaned.length() > 220) {
+            cleaned = cleaned.substring(0, 220) + "…";
+        }
+
+        return cleaned;
     }
 
     private void sendStatus(String status, int progress, long eta) {
@@ -294,14 +507,19 @@ public class DownloadService extends Service {
         }
     }
 
-    private Notification buildNotification(String status, int progress, long eta) {
+    private Notification buildNotification(
+            String status,
+            int progress,
+            long eta
+    ) {
         Intent openIntent = new Intent(this, MainActivity.class);
 
         PendingIntent openPendingIntent = PendingIntent.getActivity(
                 this,
                 0,
                 openIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_UPDATE_CURRENT
+                        | PendingIntent.FLAG_IMMUTABLE
         );
 
         Intent cancelIntent = new Intent(this, DownloadService.class);
@@ -311,44 +529,75 @@ public class DownloadService extends Service {
                 this,
                 1,
                 cancelIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_UPDATE_CURRENT
+                        | PendingIntent.FLAG_IMMUTABLE
         );
 
         String content = status;
+
         if (eta >= 0) {
             content = status + " • ETA " + eta + "s";
         }
 
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle("Click Downloader")
-                .setContentText(content)
-                .setStyle(new NotificationCompat.BigTextStyle().bigText(content))
-                .setContentIntent(openPendingIntent)
-                .addAction(
-                        android.R.drawable.ic_menu_close_clear_cancel,
-                        "Cancel",
-                        cancelPendingIntent
-                )
-                .setOnlyAlertOnce(true)
-                .setOngoing(progress < 100)
-                .setProgress(100, Math.max(0, Math.min(progress, 100)), false)
-                .build();
+        boolean finished =
+                status.toLowerCase(Locale.US).contains("completed")
+                        || status.toLowerCase(Locale.US).contains("failed")
+                        || status.toLowerCase(Locale.US).contains("finished")
+                        || status.toLowerCase(Locale.US).contains("cancelled");
+
+        NotificationCompat.Builder builder =
+                new NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setSmallIcon(android.R.drawable.stat_sys_download)
+                        .setContentTitle("Click Downloader")
+                        .setContentText(content)
+                        .setStyle(
+                                new NotificationCompat.BigTextStyle()
+                                        .bigText(content)
+                        )
+                        .setContentIntent(openPendingIntent)
+                        .setOnlyAlertOnce(true)
+                        .setOngoing(!finished);
+
+        if (!finished) {
+            builder.addAction(
+                    android.R.drawable.ic_menu_close_clear_cancel,
+                    "Cancel",
+                    cancelPendingIntent
+            );
+        }
+
+        if (!finished && progress >= 0) {
+            builder.setProgress(
+                    100,
+                    Math.max(0, Math.min(progress, 100)),
+                    false
+            );
+        } else {
+            builder.setProgress(0, 0, false);
+        }
+
+        return builder.build();
     }
 
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager manager =
-                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                    (NotificationManager) getSystemService(
+                            NOTIFICATION_SERVICE
+                    );
 
             if (manager != null) {
-                NotificationChannel channel = new NotificationChannel(
-                        CHANNEL_ID,
-                        "Downloads",
-                        NotificationManager.IMPORTANCE_LOW
+                NotificationChannel channel =
+                        new NotificationChannel(
+                                CHANNEL_ID,
+                                "Downloads",
+                                NotificationManager.IMPORTANCE_LOW
+                        );
+
+                channel.setDescription(
+                        "Click Downloader progress"
                 );
 
-                channel.setDescription("Click Downloader progress");
                 manager.createNotificationChannel(channel);
             }
         }
@@ -365,6 +614,7 @@ public class DownloadService extends Service {
         super.onDestroy();
 
         String processId = activeProcessId;
+
         if (cancelled && processId != null) {
             try {
                 YoutubeDL.getInstance().destroyProcessById(processId);
