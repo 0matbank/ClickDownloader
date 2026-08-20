@@ -29,59 +29,108 @@ jobs:
         with:
           gradle-version: "8.13"
 
+      - name: Locate Android project
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SETTINGS_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -name 'settings.gradle.kts' | head -n 1)"
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle.kts not found anywhere in repository."
+            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f | sort
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+
+          echo "Android project found at: $PROJECT_DIR"
+
+          test -f "$PROJECT_DIR/build.gradle.kts"
+          test -f "$PROJECT_DIR/app/build.gradle.kts"
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
       - name: Install Android SDK 35
         shell: bash
         run: |
+          set -euo pipefail
+
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Verify project
-        shell: bash
-        run: |
-          test -f settings.gradle.kts
-          test -f build.gradle.kts
-          test -f app/build.gradle.kts
-          test -f app/src/main/AndroidManifest.xml
           test -d "$ANDROID_HOME/platforms/android-35"
           test -d "$ANDROID_HOME/build-tools/35.0.0"
-          gradle --version
+
+      - name: Check Kotlin dependency resolution
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.locate.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+
+          echo "Checking resolved Kotlin runtime dependencies..."
+
+          gradle \
+            -p "$PROJECT_DIR" \
+            :app:dependencyInsight \
+            --dependency kotlin-stdlib \
+            --configuration debugRuntimeClasspath \
+            --no-daemon
 
       - name: Build APK
         shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.locate.outputs.project_dir }}
         run: |
-          gradle assembleDebug \
+          set -euo pipefail
+
+          echo "Building project from: $PROJECT_DIR"
+
+          gradle \
+            -p "$PROJECT_DIR" \
+            assembleDebug \
             --no-daemon \
             --stacktrace \
             --warning-mode all
 
       - name: Prepare APK
         shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.locate.outputs.project_dir }}
         run: |
-          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -n 1)"
+          set -euo pipefail
 
-          if [ -z "$APK" ]; then
-            echo "APK was not generated."
+          APK_FILE="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -type f -name '*.apk' | head -n 1)"
+
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: APK was not generated."
+            find "$PROJECT_DIR/app/build" -maxdepth 6 -type f | sort || true
             exit 1
           fi
 
-          mkdir -p release
-          cp "$APK" release/ClickDownloader-v0.3.apk
+          mkdir -p "$GITHUB_WORKSPACE/release"
 
-          cd release
-          sha256sum ClickDownloader-v0.3.apk > ClickDownloader-v0.3.apk.sha256
+          cp "$APK_FILE" "$GITHUB_WORKSPACE/release/ClickDownloader-v0.4.apk"
 
-          echo "Generated:"
+          cd "$GITHUB_WORKSPACE/release"
+          sha256sum ClickDownloader-v0.4.apk > ClickDownloader-v0.4.apk.sha256
+
+          echo "APK ready:"
           ls -lh
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ClickDownloader-v0.3-APK
+          name: ClickDownloader-v0.4-APK
           path: |
-            release/ClickDownloader-v0.3.apk
-            release/ClickDownloader-v0.3.apk.sha256
+            release/ClickDownloader-v0.4.apk
+            release/ClickDownloader-v0.4.apk.sha256
           if-no-files-found: error
           retention-days: 30
