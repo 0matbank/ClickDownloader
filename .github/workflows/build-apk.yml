@@ -117,10 +117,10 @@ jobs:
 
           mkdir -p "$GITHUB_WORKSPACE/release"
 
-          cp "$APK_FILE" "$GITHUB_WORKSPACE/release/ClickDownloader-v0.5.apk"
+          cp "$APK_FILE" "$GITHUB_WORKSPACE/release/ClickDownloader-v0.6.apk"
 
           cd "$GITHUB_WORKSPACE/release"
-          sha256sum ClickDownloader-v0.5.apk > ClickDownloader-v0.5.apk.sha256
+          sha256sum ClickDownloader-v0.6.apk > ClickDownloader-v0.6.apk.sha256
 
           echo "APK ready:"
           ls -lh
@@ -128,9 +128,9 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ClickDownloader-v0.5-APK
+          name: ClickDownloader-v0.6-APK
           path: |
-            release/ClickDownloader-v0.5.apk
-            release/ClickDownloader-v0.5.apk.sha256
+            release/ClickDownloader-v0.6.apk
+            release/ClickDownloader-v0.6.apk.sha256
           if-no-files-found: error
           retention-days: 30
