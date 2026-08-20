@@ -6,34 +6,143 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build Click Downloader APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     defaults:
       run:
         working-directory: ClickDownloader-v0.2
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Set up Gradle
+      - name: Setup Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.13'
+          gradle-version: "8.13"
+
+      - name: Show Project Files
+        run: |
+          echo "===== PROJECT ROOT ====="
+          pwd
+          echo ""
+          echo "===== FILES ====="
+          find . -maxdepth 4 -type f | sort
+
+      - name: Show Java Version
+        run: |
+          java -version
+
+      - name: Show Gradle Version
+        run: |
+          gradle --version
+
+      - name: Check Android Environment
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo ""
+          ls -la "$ANDROID_HOME" || true
+          echo ""
+          ls -la "$ANDROID_HOME/platforms" || true
+          echo ""
+          ls -la "$ANDROID_HOME/build-tools" || true
+
+      - name: Accept Android SDK Licenses
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+
+      - name: Install Android SDK 37
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-37" \
+            "build-tools;37.0.0" \
+            "platform-tools"
+
+      - name: Clean Project
+        run: |
+          gradle clean \
+            --stacktrace \
+            --warning-mode all
 
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+        run: |
+          gradle assembleDebug \
+            --stacktrace \
+            --info \
+            --warning-mode all \
+            --no-daemon
 
-      - name: Upload APK
+      - name: Find Generated APK
+        if: success()
+        run: |
+          echo "===== GENERATED APK FILES ====="
+          find app/build/outputs -type f -name "*.apk" -print || true
+
+      - name: Rename APK
+        if: success()
+        run: |
+          APK_FILE=$(find app/build/outputs/apk/debug -type f -name "*.apk" | head -n 1)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "APK file not found."
+            exit 1
+          fi
+
+          echo "Found APK: $APK_FILE"
+
+          mkdir -p release
+          cp "$APK_FILE" release/ClickDownloader-v0.2-debug.apk
+
+          echo "===== RELEASE FILE ====="
+          ls -lh release/
+
+      - name: Generate APK SHA256
+        if: success()
+        run: |
+          cd release
+          sha256sum ClickDownloader-v0.2-debug.apk > ClickDownloader-v0.2-debug.apk.sha256
+          cat ClickDownloader-v0.2-debug.apk.sha256
+
+      - name: Upload APK Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ClickDownloader-APK
-          path: ClickDownloader-v0.2/app/build/outputs/apk/debug/*.apk
+          name: ClickDownloader-v0.2-APK
+          path: |
+            ClickDownloader-v0.2/release/ClickDownloader-v0.2-debug.apk
+            ClickDownloader-v0.2/release/ClickDownloader-v0.2-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Print Build Failure Information
+        if: failure()
+        run: |
+          echo ""
+          echo "========================================"
+          echo " CLICK DOWNLOADER APK BUILD FAILED"
+          echo "========================================"
+          echo ""
+          echo "Look above for:"
+          echo "e:"
+          echo "error:"
+          echo "FAILURE:"
+          echo "What went wrong:"
+          echo "Execution failed for task"
+          echo "Could not resolve"
+          echo ""
+          echo "===== BUILD DIRECTORY ====="
+          find app/build -maxdepth 5 -type f 2>/dev/null | sort | tail -100 || true
