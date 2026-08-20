@@ -9,7 +9,6 @@ import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
@@ -22,12 +21,9 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
-import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
@@ -41,31 +37,24 @@ import java.util.regex.Pattern;
 
 public class MainActivity extends AppCompatActivity {
 
-    private static final int BG = Color.rgb(11, 13, 16);
-    private static final int SURFACE = Color.rgb(20, 24, 32);
-    private static final int SURFACE_2 = Color.rgb(27, 34, 48);
+    private static final int BG = Color.rgb(7, 9, 18);
+    private static final int CARD = Color.rgb(20, 24, 36);
+    private static final int INPUT = Color.rgb(29, 35, 50);
     private static final int TEXT = Color.rgb(247, 248, 250);
-    private static final int MUTED = Color.rgb(170, 178, 192);
-    private static final int ACCENT = Color.rgb(91, 140, 255);
-    private static final int DANGER = Color.rgb(255, 90, 107);
+    private static final int MUTED = Color.rgb(165, 174, 190);
+    private static final int BLUE = Color.rgb(82, 132, 255);
+    private static final int RED = Color.rgb(255, 86, 104);
 
     private final ExecutorService analyzerExecutor = Executors.newSingleThreadExecutor();
 
     private EditText urlInput;
-    private Spinner qualitySpinner;
-    private Switch aria2Switch;
-    private Switch thumbSwitch;
-    private Switch metaSwitch;
-    private Switch subsSwitch;
+    private TextView mediaTitle;
     private TextView statusText;
-    private TextView infoText;
-    private TextView cookieText;
-    private TextView historyText;
-    private ProgressBar progressBar;
+    private Spinner resolutionSpinner;
     private Button downloadButton;
     private Button cancelButton;
-
-    private ActivityResultLauncher<String[]> cookiePicker;
+    private ProgressBar progressBar;
+    private LinearLayout downloadPanel;
 
     private final BroadcastReceiver progressReceiver = new BroadcastReceiver() {
         @Override
@@ -80,55 +69,31 @@ public class MainActivity extends AppCompatActivity {
 
             progressBar.setProgress(progress);
 
-            if (status == null) {
-                status = "Working";
+            if (status == null || status.trim().isEmpty()) {
+                status = "Downloading…";
             }
 
             if (eta >= 0) {
-                statusText.setText(status + "\nETA: " + eta + " seconds");
+                statusText.setText(status + "\nETA: " + eta + "s");
             } else {
                 statusText.setText(status);
             }
 
-            if (status.contains("completed")
-                    || status.contains("Completed")
-                    || status.contains("finished")
-                    || status.contains("Finished")
-                    || status.contains("failed")
-                    || status.contains("Failed")
-                    || status.contains("Cancelled")) {
-                refreshHistory();
-            }
+            String lower = status.toLowerCase();
+            boolean finished = lower.contains("completed")
+                    || lower.contains("failed")
+                    || lower.contains("cancelled");
+
+            cancelButton.setVisibility(finished ? View.GONE : View.VISIBLE);
         }
     };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        cookiePicker = registerForActivityResult(
-                new ActivityResultContracts.OpenDocument(),
-                uri -> {
-                    if (uri == null) {
-                        return;
-                    }
-
-                    boolean ok = CookieStore.importFile(this, uri);
-                    updateCookieText();
-
-                    Toast.makeText(
-                            this,
-                            ok ? "cookies.txt imported" : "Cookie import failed",
-                            Toast.LENGTH_LONG
-                    ).show();
-                }
-        );
-
         setContentView(buildUi());
         consumeShareIntent(getIntent());
         requestNotificationPermissionIfNeeded();
-        refreshHistory();
-        updateCookieText();
     }
 
     @Override
@@ -138,11 +103,7 @@ public class MainActivity extends AppCompatActivity {
         IntentFilter filter = new IntentFilter(DownloadService.ACTION_PROGRESS);
 
         if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(
-                    progressReceiver,
-                    filter,
-                    Context.RECEIVER_NOT_EXPORTED
-            );
+            registerReceiver(progressReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
             registerReceiver(progressReceiver, filter);
         }
@@ -151,7 +112,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onStop() {
         super.onStop();
-
         try {
             unregisterReceiver(progressReceiver);
         } catch (Exception ignored) {
@@ -167,47 +127,50 @@ public class MainActivity extends AppCompatActivity {
 
     private View buildUi() {
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
         scroll.setFitsSystemWindows(true);
         scroll.setBackgroundColor(BG);
-        scroll.setFillViewport(true);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(20), dp(18), dp(32));
+        root.setPadding(dp(20), dp(28), dp(20), dp(36));
         scroll.addView(root);
 
-        TextView title = text("Click Downloader", 28, TEXT, true);
+        TextView title = text("Click Downloader", 30, TEXT, true);
         root.addView(title);
 
         TextView subtitle = text(
-                "Advanced media downloader • yt-dlp + FFmpeg + aria2",
-                13,
+                "Paste link, choose quality, download.",
+                14,
                 MUTED,
                 false
         );
-        subtitle.setPadding(0, dp(4), 0, dp(18));
+        subtitle.setPadding(0, dp(5), 0, dp(22));
         root.addView(subtitle);
 
-        LinearLayout inputCard = card();
-        root.addView(inputCard);
+        LinearLayout card = card();
+        root.addView(card);
 
-        inputCard.addView(sectionTitle("Media links"));
+        TextView linkLabel = text("Video link", 16, TEXT, true);
+        linkLabel.setPadding(0, 0, 0, dp(10));
+        card.addView(linkLabel);
 
         urlInput = new EditText(this);
         urlInput.setTextColor(TEXT);
         urlInput.setHintTextColor(MUTED);
-        urlInput.setHint("Paste one or multiple URLs, one per line");
+        urlInput.setHint("Paste YouTube or supported media link");
         urlInput.setTextSize(15);
-        urlInput.setMinLines(4);
+        urlInput.setSingleLine(false);
+        urlInput.setMinLines(2);
         urlInput.setGravity(Gravity.TOP);
         urlInput.setInputType(
                 InputType.TYPE_CLASS_TEXT
                         | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                         | InputType.TYPE_TEXT_VARIATION_URI
         );
-        urlInput.setPadding(dp(14), dp(12), dp(14), dp(12));
-        urlInput.setBackground(roundRect(SURFACE_2, 14));
-        inputCard.addView(
+        urlInput.setPadding(dp(14), dp(13), dp(14), dp(13));
+        urlInput.setBackground(roundRect(INPUT, 14));
+        card.addView(
                 urlInput,
                 new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
@@ -215,113 +178,90 @@ public class MainActivity extends AppCompatActivity {
                 )
         );
 
-        Button analyzeButton = button("Analyze first link", false);
-        analyzeButton.setOnClickListener(v -> analyzeFirstUrl());
-        addTopMargin(inputCard, analyzeButton, 10);
+        Button analyzeButton = blueButton("ANALYZE LINK");
+        analyzeButton.setOnClickListener(v -> analyzeLink());
+        addTopMargin(card, analyzeButton, 12);
 
-        infoText = text(
-                "Paste a link and tap Analyze.",
+        mediaTitle = text(
+                "Video information will appear here.",
                 13,
                 MUTED,
                 false
         );
-        infoText.setPadding(0, dp(10), 0, 0);
-        inputCard.addView(infoText);
+        mediaTitle.setPadding(0, dp(12), 0, 0);
+        card.addView(mediaTitle);
 
-        LinearLayout optionsCard = card();
-        addTopMargin(root, optionsCard, 14);
+        downloadPanel = card();
+        downloadPanel.setVisibility(View.GONE);
+        addTopMargin(root, downloadPanel, 14);
 
-        optionsCard.addView(sectionTitle("Download options"));
+        TextView qualityLabel = text("Select quality", 16, TEXT, true);
+        qualityLabel.setPadding(0, 0, 0, dp(10));
+        downloadPanel.addView(qualityLabel);
 
-        qualitySpinner = new Spinner(this);
+        resolutionSpinner = new Spinner(this);
+
+        String[] simpleLabels = {
+                "Best available",
+                "1080p",
+                "720p",
+                "480p",
+                "360p",
+                "Audio MP3"
+        };
+
         ArrayAdapter<String> adapter = new ArrayAdapter<String>(
                 this,
                 android.R.layout.simple_spinner_item,
-                DownloadOptions.LABELS
+                simpleLabels
         ) {
             @Override
-            public View getView(int position, View convertView, android.view.ViewGroup parent) {
+            public View getView(
+                    int position,
+                    View convertView,
+                    android.view.ViewGroup parent
+            ) {
                 TextView view = (TextView) super.getView(position, convertView, parent);
                 view.setTextColor(TEXT);
-                view.setTextSize(15);
-                view.setPadding(dp(12), dp(10), dp(12), dp(10));
+                view.setTextSize(16);
+                view.setPadding(dp(14), dp(13), dp(14), dp(13));
                 return view;
             }
 
             @Override
-            public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
+            public View getDropDownView(
+                    int position,
+                    View convertView,
+                    android.view.ViewGroup parent
+            ) {
                 TextView view = (TextView) super.getDropDownView(position, convertView, parent);
                 view.setTextColor(Color.BLACK);
-                view.setTextSize(15);
-                view.setPadding(dp(12), dp(12), dp(12), dp(12));
+                view.setTextSize(16);
+                view.setPadding(dp(14), dp(14), dp(14), dp(14));
                 return view;
             }
         };
+
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        qualitySpinner.setAdapter(adapter);
-        qualitySpinner.setBackground(roundRect(SURFACE_2, 12));
-        optionsCard.addView(qualitySpinner);
+        resolutionSpinner.setAdapter(adapter);
+        resolutionSpinner.setBackground(roundRect(INPUT, 14));
 
-        aria2Switch = optionSwitch(
-                "aria2 acceleration (experimental)",
-                "Faster on some sites. Falls back to native downloader if aria2 fails.",
-                false
+        downloadPanel.addView(
+                resolutionSpinner,
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        dp(54)
+                )
         );
-        addTopMargin(optionsCard, aria2Switch, 8);
 
-        thumbSwitch = optionSwitch(
-                "Embed thumbnail",
-                "Attach thumbnail to supported output formats.",
-                true
-        );
-        optionsCard.addView(thumbSwitch);
+        downloadButton = blueButton("DOWNLOAD");
+        downloadButton.setOnClickListener(v -> startDownload());
+        addTopMargin(downloadPanel, downloadButton, 14);
 
-        metaSwitch = optionSwitch(
-                "Embed metadata",
-                "Write available title/uploader metadata.",
-                true
-        );
-        optionsCard.addView(metaSwitch);
-
-        subsSwitch = optionSwitch(
-                "Subtitles",
-                "Download and embed available subtitles.",
-                false
-        );
-        optionsCard.addView(subsSwitch);
-
-        LinearLayout authCard = card();
-        addTopMargin(root, authCard, 14);
-
-        authCard.addView(sectionTitle("Authentication cookies"));
-
-        cookieText = text("", 13, MUTED, false);
-        authCard.addView(cookieText);
-
-        Button importCookies = button("Import cookies.txt", false);
-        importCookies.setOnClickListener(v ->
-                cookiePicker.launch(new String[]{"text/plain", "*/*"})
-        );
-        addTopMargin(authCard, importCookies, 8);
-
-        Button clearCookies = button("Remove cookies", true);
-        clearCookies.setOnClickListener(v -> {
-            CookieStore.clear(this);
-            updateCookieText();
-            Toast.makeText(this, "Cookies removed", Toast.LENGTH_SHORT).show();
-        });
-        addTopMargin(authCard, clearCookies, 8);
-
-        LinearLayout actionCard = card();
-        addTopMargin(root, actionCard, 14);
-
-        downloadButton = button("START DOWNLOAD QUEUE", false);
-        downloadButton.setOnClickListener(v -> startDownloads());
-        actionCard.addView(downloadButton);
-
-        cancelButton = button("CANCEL ACTIVE DOWNLOAD", true);
+        cancelButton = redButton("CANCEL");
+        cancelButton.setVisibility(View.GONE);
         cancelButton.setOnClickListener(v -> cancelDownload());
-        addTopMargin(actionCard, cancelButton, 8);
+        addTopMargin(downloadPanel, cancelButton, 8);
 
         progressBar = new ProgressBar(
                 this,
@@ -330,46 +270,15 @@ public class MainActivity extends AppCompatActivity {
         );
         progressBar.setMax(100);
         progressBar.setProgress(0);
-        addTopMargin(actionCard, progressBar, 14);
+        addTopMargin(downloadPanel, progressBar, 16);
 
-        statusText = text("Idle", 13, MUTED, false);
+        statusText = text("Ready", 13, MUTED, false);
         statusText.setPadding(0, dp(10), 0, 0);
-        actionCard.addView(statusText);
-
-        LinearLayout historyCard = card();
-        addTopMargin(root, historyCard, 14);
-
-        LinearLayout historyHeader = new LinearLayout(this);
-        historyHeader.setOrientation(LinearLayout.HORIZONTAL);
-        historyHeader.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView historyTitle = sectionTitle("History");
-        historyHeader.addView(
-                historyTitle,
-                new LinearLayout.LayoutParams(
-                        0,
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        1f
-                )
-        );
-
-        Button clearHistory = smallButton("Clear");
-        clearHistory.setOnClickListener(v -> {
-            HistoryStore.clear(this);
-            refreshHistory();
-        });
-        historyHeader.addView(clearHistory);
-
-        historyCard.addView(historyHeader);
-
-        historyText = text("", 12, MUTED, false);
-        historyText.setTextIsSelectable(true);
-        historyCard.addView(historyText);
+        downloadPanel.addView(statusText);
 
         TextView footer = text(
-                "Downloads are saved to Internal Storage/Download/ClickDownloader. "
-                        + "Use only for media you are allowed to download. "
-                        + "This app does not include DRM or paywall bypass.",
+                "Downloads are saved inside the app's Android storage folder. "
+                        + "Use only for media you are allowed to download.",
                 11,
                 MUTED,
                 false
@@ -380,16 +289,16 @@ public class MainActivity extends AppCompatActivity {
         return scroll;
     }
 
-    private void analyzeFirstUrl() {
-        ArrayList<String> urls = extractUrls(urlInput.getText().toString());
+    private void analyzeLink() {
+        String url = extractFirstUrl(urlInput.getText().toString());
 
-        if (urls.isEmpty()) {
-            urlInput.setError("Enter a valid http/https URL");
+        if (url == null) {
+            urlInput.setError("Paste a valid http/https link");
             return;
         }
 
-        String url = urls.get(0);
-        infoText.setText("Analyzing…");
+        mediaTitle.setText("Analyzing…");
+        downloadPanel.setVisibility(View.GONE);
 
         analyzerExecutor.execute(() -> {
             try {
@@ -397,75 +306,74 @@ public class MainActivity extends AppCompatActivity {
                         .getInfo(url)
                         .getTitle();
 
-                runOnUiThread(() ->
-                        infoText.setText(
-                                "Detected:\n"
-                                        + (title == null || title.trim().isEmpty()
-                                        ? url
-                                        : title)
-                        )
-                );
+                runOnUiThread(() -> {
+                    mediaTitle.setText(
+                            title == null || title.trim().isEmpty()
+                                    ? "Link detected successfully."
+                                    : title
+                    );
+                    downloadPanel.setVisibility(View.VISIBLE);
+                    statusText.setText("Choose quality and press Download.");
+                });
 
             } catch (Exception e) {
-                runOnUiThread(() ->
-                        infoText.setText(
-                                "Analyze failed:\n"
-                                        + (e.getMessage() == null
-                                        ? e.getClass().getSimpleName()
-                                        : e.getMessage())
-                        )
-                );
+                runOnUiThread(() -> {
+                    mediaTitle.setText(
+                            "Could not analyze link:\n"
+                                    + readableError(e)
+                    );
+                    downloadPanel.setVisibility(View.GONE);
+                });
             }
         });
     }
 
-    private void startDownloads() {
-        ArrayList<String> urls = extractUrls(urlInput.getText().toString());
+    private void startDownload() {
+        String url = extractFirstUrl(urlInput.getText().toString());
 
-        if (urls.isEmpty()) {
-            urlInput.setError("Enter at least one valid URL");
+        if (url == null) {
+            urlInput.setError("Paste a valid link first");
             return;
         }
 
-        Intent serviceIntent = new Intent(this, DownloadService.class);
-        serviceIntent.setAction(DownloadService.ACTION_START);
-        serviceIntent.putStringArrayListExtra(DownloadService.EXTRA_URLS, urls);
-        serviceIntent.putExtra(
+        ArrayList<String> urls = new ArrayList<>();
+        urls.add(url);
+
+        Intent intent = new Intent(this, DownloadService.class);
+        intent.setAction(DownloadService.ACTION_START);
+        intent.putStringArrayListExtra(DownloadService.EXTRA_URLS, urls);
+        intent.putExtra(
                 DownloadService.EXTRA_QUALITY,
-                qualitySpinner.getSelectedItemPosition()
-        );
-        serviceIntent.putExtra(
-                DownloadService.EXTRA_ARIA2,
-                aria2Switch.isChecked()
-        );
-        serviceIntent.putExtra(
-                DownloadService.EXTRA_THUMB,
-                thumbSwitch.isChecked()
-        );
-        serviceIntent.putExtra(
-                DownloadService.EXTRA_META,
-                metaSwitch.isChecked()
-        );
-        serviceIntent.putExtra(
-                DownloadService.EXTRA_SUBS,
-                subsSwitch.isChecked()
+                resolutionSpinner.getSelectedItemPosition()
         );
 
-        ContextCompat.startForegroundService(this, serviceIntent);
+        // Simple mode: native yt-dlp downloader only.
+        intent.putExtra(DownloadService.EXTRA_ARIA2, false);
 
-        statusText.setText(
-                urls.size() == 1
-                        ? "Queued 1 download"
-                        : "Queued " + urls.size() + " downloads"
-        );
+        // Keep useful metadata features automatic, with no extra UI.
+        intent.putExtra(DownloadService.EXTRA_THUMB, true);
+        intent.putExtra(DownloadService.EXTRA_META, true);
+        intent.putExtra(DownloadService.EXTRA_SUBS, false);
+
+        ContextCompat.startForegroundService(this, intent);
 
         progressBar.setProgress(0);
+        statusText.setText("Starting download…");
+        cancelButton.setVisibility(View.VISIBLE);
+        downloadButton.setEnabled(false);
+
+        // Re-enable shortly through UI state rather than blocking another task.
+        downloadButton.postDelayed(
+                () -> downloadButton.setEnabled(true),
+                1500
+        );
     }
 
     private void cancelDownload() {
         Intent intent = new Intent(this, DownloadService.class);
         intent.setAction(DownloadService.ACTION_CANCEL);
         startService(intent);
+        cancelButton.setVisibility(View.GONE);
     }
 
     private void consumeShareIntent(Intent intent) {
@@ -476,125 +384,77 @@ public class MainActivity extends AppCompatActivity {
         if (Intent.ACTION_SEND.equals(intent.getAction())
                 && "text/plain".equals(intent.getType())) {
 
-            String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+            String shared = intent.getStringExtra(Intent.EXTRA_TEXT);
 
-            if (text != null && !text.trim().isEmpty()) {
-                urlInput.setText(text);
+            if (shared != null && !shared.trim().isEmpty()) {
+                urlInput.setText(shared);
             }
         }
     }
 
-    private ArrayList<String> extractUrls(String text) {
-        ArrayList<String> urls = new ArrayList<>();
-
+    private String extractFirstUrl(String text) {
         Pattern pattern = Pattern.compile("https?://[^\\s]+");
         Matcher matcher = pattern.matcher(text == null ? "" : text);
 
-        while (matcher.find()) {
-            String value = matcher.group();
-
-            while (value.endsWith(",")
-                    || value.endsWith(";")
-                    || value.endsWith(")")
-                    || value.endsWith("]")) {
-                value = value.substring(0, value.length() - 1);
-            }
-
-            if (!urls.contains(value)) {
-                urls.add(value);
-            }
+        if (!matcher.find()) {
+            return null;
         }
 
-        return urls;
-    }
+        String value = matcher.group();
 
-    private void updateCookieText() {
-        cookieText.setText(
-                CookieStore.exists(this)
-                        ? "Private cookies.txt loaded."
-                        : "No cookie file loaded."
-        );
-    }
-
-    private void refreshHistory() {
-        if (historyText == null) {
-            return;
+        while (value.endsWith(",")
+                || value.endsWith(";")
+                || value.endsWith(")")
+                || value.endsWith("]")) {
+            value = value.substring(0, value.length() - 1);
         }
 
-        String history = HistoryStore.get(this);
-
-        historyText.setText(
-                history.trim().isEmpty()
-                        ? "No completed downloads yet."
-                        : history
-        );
+        return value;
     }
 
-    private void requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33
-                && ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS
-        ) != PackageManager.PERMISSION_GRANTED) {
-
-            requestPermissions(
-                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                    200
-            );
+    private String readableError(Exception e) {
+        if (e == null) {
+            return "Unknown error";
         }
+
+        String message = e.getMessage();
+
+        if (message == null || message.trim().isEmpty()) {
+            return e.getClass().getSimpleName();
+        }
+
+        message = message.replace('\n', ' ').replace('\r', ' ').trim();
+
+        if (message.length() > 200) {
+            message = message.substring(0, 200) + "…";
+        }
+
+        return message;
     }
 
     private LinearLayout card() {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(16), dp(16), dp(16));
-        card.setBackground(roundRect(SURFACE, 18));
+        card.setBackground(roundRect(CARD, 18));
         return card;
     }
 
-    private TextView sectionTitle(String value) {
-        TextView v = text(value, 17, TEXT, true);
-        v.setPadding(0, 0, 0, dp(10));
-        return v;
-    }
-
-    private Switch optionSwitch(
-            String title,
-            String subtitle,
-            boolean checked
-    ) {
-        Switch sw = new Switch(this);
-        sw.setText(title + "\n" + subtitle);
-        sw.setTextColor(TEXT);
-        sw.setTextSize(14);
-        sw.setChecked(checked);
-        sw.setPadding(0, dp(7), 0, dp(7));
-        return sw;
-    }
-
-    private Button button(String label, boolean danger) {
+    private Button blueButton(String label) {
         Button button = new Button(this);
         button.setAllCaps(false);
         button.setText(label);
         button.setTextColor(Color.WHITE);
-        button.setTextSize(14);
+        button.setTextSize(15);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(dp(12), dp(10), dp(12), dp(10));
-        button.setBackground(roundRect(danger ? DANGER : ACCENT, 14));
+        button.setBackground(roundRect(BLUE, 14));
         return button;
     }
 
-    private Button smallButton(String label) {
-        Button button = button(label, true);
-        button.setTextSize(12);
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                dp(42)
-        );
-
-        button.setLayoutParams(lp);
+    private Button redButton(String label) {
+        Button button = blueButton(label);
+        button.setBackground(roundRect(RED, 14));
         return button;
     }
 
@@ -641,5 +501,19 @@ public class MainActivity extends AppCompatActivity {
         return Math.round(
                 value * getResources().getDisplayMetrics().density
         );
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+        ) != PackageManager.PERMISSION_GRANTED) {
+
+            requestPermissions(
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    200
+            );
+        }
     }
 }

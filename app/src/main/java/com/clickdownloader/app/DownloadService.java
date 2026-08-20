@@ -128,13 +128,16 @@ public class DownloadService extends Service {
             boolean meta,
             boolean subs
     ) {
-        File outputDir = new File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "ClickDownloader"
-        );
+        File baseDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+
+        if (baseDir == null) {
+            baseDir = getFilesDir();
+        }
+
+        File outputDir = new File(baseDir, "ClickDownloader");
 
         if (!outputDir.exists() && !outputDir.mkdirs()) {
-            String message = "Failed: cannot create Downloads/ClickDownloader";
+            String message = "Failed: cannot create app download folder";
             sendStatus(message, 0, -1);
             updateForeground(message, 0, -1);
             stopForeground(STOP_FOREGROUND_REMOVE);
